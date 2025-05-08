@@ -1,19 +1,12 @@
-# main.py
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-# 1. Import the lifespan manager from your core directory
 from app.db.life_span import lifespan_manager
-
-# 2. Import the main router(s) from your routes directory
 from app.api import chatroom
 
 import requests
 from bs4 import BeautifulSoup
 
 # --- App Initialization with Lifespan ---
-# The lifespan manager handles startup (DB init, VectorStore init) and shutdown
 app = FastAPI(
     title="Youtube.AI API",
     description="API for interacting with YouTube video transcripts, generating summaries, answering questions, and more.",

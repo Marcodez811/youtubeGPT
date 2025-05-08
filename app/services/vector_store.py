@@ -1,6 +1,6 @@
 import uuid
 from typing import List, Dict, Any, Optional
-from embeddings import SentenceTransformerEmbedding
+from app.services.embeddings import SentenceTransformerEmbedding
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import SQLModel, Field, Column, Session, text, create_engine
 from pgvector.sqlalchemy import Vector

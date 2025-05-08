@@ -19,7 +19,6 @@ async def lifespan_manager(app: FastAPI):
     Handles database initialization and VectorStore setup.
     """
     print("Lifespan: Application startup...")
-
     # --- Initialize Database ---
     print("Lifespan: Initializing database tables...")
     try:
@@ -48,9 +47,7 @@ async def lifespan_manager(app: FastAPI):
         raise RuntimeError(f"Vector Store initialization failed: {e}") from e
 
     yield # Application runs here
-
     # --- Cleanup ---
     print("Lifespan: Application shutdown...")
-    # Add cleanup logic if needed (e.g., closing explicit connections, releasing GPU memory)
-    shared_resources.clear() # Clear the shared resources
+    shared_resources.clear()
     print("Lifespan: Cleanup complete.")
