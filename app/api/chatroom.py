@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
+from pydantic import BaseModel
 from typing import List, Dict, Any, AsyncGenerator
 from app.services.transcript import load_pipeline, get_video_content, Transcript
 from app.services.intent_classifier import classify_intent 
 from app.services.vector_store import VectorStore
 from app.services.responder import generate_summary_response, generate_qa_response
 from app.models.vid_chat import VidChat
-from app.models.message import Message
+from app.models.message import Message, MessageSender
 from app.schemas.chatroom_schemas import ChatroomPayload, ChatroomQueryPayload
 from app.db.session import get_session
 from app.db.dependencies import get_vector_store
@@ -15,8 +16,8 @@ from fastapi.responses import StreamingResponse
 
 # --- Router Definition ---
 router = APIRouter(
-    prefix="/api/chatrooms", # Add a prefix for clarity
-    tags=["Chatrooms"]   # Tag for API docs
+    prefix="/api/chatrooms",
+    tags=["Chatrooms"]
 )
 
 async def _string_to_async_generator(text: str, intent: str) -> AsyncGenerator[str, None]:
@@ -25,11 +26,6 @@ async def _string_to_async_generator(text: str, intent: str) -> AsyncGenerator[s
     optionally prefixing with intent if a structured stream (like SSE) was desired.
     For plain text stream, we just yield the text.
     """
-    # If you want to send intent as part of the stream (e.g. as a first chunk or JSON object)
-    # you could do it here. For simple text stream, just yield content.
-    # Example for SSE-like structure (would need media_type="text/event-stream"):
-    # yield f"event: intent\ndata: {json.dumps({'intent': intent})}\n\n"
-    # yield f"event: content\ndata: {json.dumps({'text': text})}\n\n"
     yield text
 
 # --- API Endpoints ---
@@ -90,18 +86,28 @@ def create_chatroom(payload: ChatroomPayload, session: Session = Depends(get_ses
         print(f"Database error creating chatroom for {vid_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to save chatroom data.")
     
+class VidChatWithMessages(BaseModel):
+    vid_chat: VidChat
+    messages: List[Message]
 
-@router.get("/{vid_id}", response_model=VidChat)
+
+@router.get("/{vid_id}", response_model=VidChatWithMessages)
 def get_chatroom_by_id(vid_id: str, session: Session = Depends(get_session)):
     """
     Retrieves VidChat details for a given video ID.
     """
     print(f"Fetching chatroom for video ID: {vid_id}")
-    vid_chat = session.get(VidChat, vid_id) # Efficient lookup by primary key
+    vid_chat = session.get(VidChat, vid_id)
     if not vid_chat:
         print(f"Chatroom not found for video ID: {vid_id}")
         raise HTTPException(status_code=404, detail=f"Chatroom for video ID '{vid_id}' not found.")
-    return vid_chat
+    # fetch messages for this video chat
+    messages_stm = select(Message).where(Message.vid_id == vid_id).order_by(Message.created_at)
+    messages = session.exec(messages_stm).all()
+    return {
+        "vid_chat": vid_chat,
+        "messages": messages
+    }
 
 @router.get("/", response_model=List[VidChat])
 def get_chatrooms(session: Session = Depends(get_session)):
@@ -177,7 +183,34 @@ async def query_chatroom(vid_id: str, payload: ChatroomQueryPayload, session: Se
             response_content = "Sorry, I'm not sure how to handle that request regarding the video."
             content_stream_generator = _string_to_async_generator(response_content, intent)
 
-        return StreamingResponse(content_stream_generator, media_type="text/plain")
+        # Create an async generator that preserves streaming and saves messages
+        async def message_stream_generator():
+            # Save user message
+            user_message = Message(
+                vid_id=vid_id,
+                content=user_query,
+                sent_by=MessageSender.USER
+            )
+            session.add(user_message)
+
+            # Collect bot response while streaming
+            bot_response = ""
+            try:
+                async for chunk in content_stream_generator:
+                    bot_response += chunk
+                    yield chunk
+            except:
+                bot_response = "We've encountered an ERROR while generating the content."
+            # Save bot message after stream is complete
+            bot_message = Message(
+                vid_id=vid_id,
+                content=bot_response,
+                sent_by=MessageSender.BOT
+            )
+            session.add(bot_message)
+            session.commit()
+
+        return StreamingResponse(message_stream_generator(), media_type="text/plain")
 
     except Exception as e:
          print(f"Error processing intent '{intent}' for vid_id '{vid_id}': {e}")

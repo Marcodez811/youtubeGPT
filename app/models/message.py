@@ -1,9 +1,9 @@
-from sqlmodel import SQLModel, Field, Index
+from sqlmodel import SQLModel, Field, Index, Column, Enum
 import uuid
 from datetime import datetime
-from enum import Enum
+from enum import Enum as PyEnum
 
-class MessageSender(Enum):
+class MessageSender(PyEnum):
     BOT = "bot"
     USER = "user"
 
@@ -24,4 +24,10 @@ class Message(SQLModel, table=True):
         default_factory=datetime.now,
         nullable=False
     )
-    sent_by: MessageSender
+    sent_by: str = Field(
+        sa_column=Column(
+            "sent_by", 
+            Enum(MessageSender), 
+            nullable=False
+        )
+    )

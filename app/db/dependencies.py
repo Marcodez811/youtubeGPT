@@ -1,4 +1,3 @@
-# core/dependencies.py (New file or add to lifespan.py)
 from fastapi import HTTPException
 from app.db.life_span import shared_resources
 from app.services.vector_store import VectorStore

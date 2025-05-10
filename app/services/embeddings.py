@@ -32,9 +32,6 @@ class SentenceTransformerEmbedding():
                         If input is a list of strings, returns a 2D array where each row
                         is an embedding for the corresponding input string.
         """
-        # Use the encode method of the SentenceTransformer model
-        # It handles both single strings and lists of strings automatically.
-        # By default, it returns numpy arrays.
         embeddings = self.model.encode(texts, batch_size=32, normalize_embeddings=True)
         return embeddings
 
