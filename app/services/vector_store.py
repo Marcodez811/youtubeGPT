@@ -202,7 +202,7 @@ class VectorStore:
         session = Session(self.engine)
         try:
             # Execute the statement, passing only the value parameter
-            result = session.exec(stmt, {"value_param": vid_id})
+            result = session.exec(statement=stmt, params={"value_param": vid_id})
             session.commit()
             deleted_count = result.rowcount
             if deleted_count > 0:

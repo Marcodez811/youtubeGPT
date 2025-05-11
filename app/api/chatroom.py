@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlmodel import Session, select
+from sqlalchemy import delete
 from pydantic import BaseModel
 from typing import List, Dict, Any, AsyncGenerator
 from app.services.transcript import load_pipeline, get_video_content, Transcript
 from app.services.intent_classifier import classify_intent 
 from app.services.vector_store import VectorStore
-from app.services.responder import generate_summary_response, generate_qa_response
+from app.services.responder import generate_qa_response, generate_summary, generate_chat_response, generate_summary_full, generate_summary_specific
 from app.models.vid_chat import VidChat
 from app.models.message import Message, MessageSender
 from app.schemas.chatroom_schemas import ChatroomPayload, ChatroomQueryPayload
@@ -55,10 +56,6 @@ def create_chatroom(payload: ChatroomPayload, session: Session = Depends(get_ses
     try:
         # Get timestamped transcript
         transcript_wts_list: List[Dict[str, Any]] = get_video_content(vid_id)
-        if not isinstance(transcript_wts_list, list):
-            print(f"Warning: get_video_content did not return a list for {vid_id}")
-            transcript_wts_list = [] # Or raise error
-
     except Exception as e:
         print(f"Error getting transcript for {vid_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process transcript for video {vid_id}.")
@@ -69,6 +66,7 @@ def create_chatroom(payload: ChatroomPayload, session: Session = Depends(get_ses
         title=title,
         url=url_str,
         description=description,
+        summary=generate_summary("Give a high level summarizaiton of what this video is all about.", transcript_obj.content),
         transcript=transcript_obj.content,
         transcript_wts=transcript_wts_list
     )
@@ -108,6 +106,68 @@ def get_chatroom_by_id(vid_id: str, session: Session = Depends(get_session)):
         "vid_chat": vid_chat,
         "messages": messages
     }
+
+@router.delete("/{vid_id}", status_code=204)
+async def delete_chatroom_by_id(
+    vid_id: str,
+    session: Session = Depends(get_session),
+    vector_store: VectorStore = Depends(get_vector_store)
+):
+    """
+    Deletes a chatroom and all associated messages by video ID.
+
+    Args:
+    - vid_id (str): The ID of the video, which is also used as the ID for the VidChat.
+    - session (Session): The database session.
+    - vector_store (VectorStore): The vector store client.
+
+    Returns:
+    - 204 No Content on success.
+    - 404 if the chatroom (VidChat) with the given vid_id is not found.
+    - 500 on other database errors or issues with the vector store.
+    """
+    try:
+        # 1. Attempt to find the chatroom (VidChat) first.
+        #    This allows us to fail fast with a 404 if it doesn't exist.
+        chatroom_statement = select(VidChat).where(VidChat.id == vid_id)
+        chatroom_to_delete = session.exec(chatroom_statement).first()
+
+        if not chatroom_to_delete:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Chatroom with vid_id '{vid_id}' not found."
+            )
+
+        # 2. Delete associated messages
+        session.exec(delete(Message).where(Message.vid_id == vid_id))
+
+        # 3. Delete the chatroom (VidChat) itself
+        print(f"Marking chatroom '{vid_id}' for deletion.")
+        session.delete(chatroom_to_delete)
+
+        # 4. Delete associated chunks from the vector store
+        print(f"Requesting deletion of chunks for vid_id '{vid_id}' from vector store.")
+        vector_store.delete_chunks(vid_id)
+        print(f"Successfully requested deletion of chunks for vid_id '{vid_id}'.")
+
+        # 5. Commit the database transaction
+        session.commit()
+        print(f"Successfully deleted chatroom and messages for vid_id '{vid_id}' and committed to DB.")
+
+        return Response(status_code=204)
+
+    except HTTPException:
+        # Re-raise HTTPException directly to preserve its status code and details
+        raise
+    except Exception as e:
+        # For any other type of exception (e.g., database error during commit,
+        # vector store error if it raises something other than HTTPException)
+        print(f"An error occurred: {str(e)}. Rolling back session.")
+        session.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete chatroom for vid_id '{vid_id}': {str(e)}"
+        )
 
 @router.get("/", response_model=List[VidChat])
 def get_chatrooms(session: Session = Depends(get_session)):
@@ -154,31 +214,33 @@ async def query_chatroom(vid_id: str, payload: ChatroomQueryPayload, session: Se
     content_stream_generator: AsyncGenerator[str, None]
 
     try:
-        if intent == "summarization":
-            # Call your summarization function/service
-            # Pass the necessary context (full transcript, specific user query)
-            content_stream_generator = generate_summary_response(vid_chat.transcript, user_query)
-        elif intent == "question-answering":
-            # Call your RAG/QA function/service
-            # Pass the query and potentially the vid_id to access vector store chunks
-            content_stream_generator = generate_qa_response(user_query, vid_id) # Assuming RAG uses vid_id
-        elif intent == "quiz-gen":
-            # response_content = generate_quiz(vid_chat.transcript)
-            response_content = "Quiz generation is not implemented yet." # Placeholder
+        # Summarization
+        if intent == "summarize_full":
+            content_stream_generator = generate_summary_full(vid_chat.transcript, user_query)
+        elif intent == "summarize_specific":
+            content_stream_generator = generate_summary_specific(vid_id, user_query)
+        # Q&A
+        elif intent == "qa_specific":
+            content_stream_generator = generate_qa_response(user_query, vid_id)
+        # Conversational
+        elif intent == "general_chat":
+            # current uses the vanilla sliding window method for allowing conversational flow.
+            stmt = select(Message.content, Message.sent_by).where(Message.vid_id == vid_id).order_by(Message.created_at.desc()).limit(5)
+            results = session.exec(stmt).mappings().all()
+            history = list(reversed([f'{m.sent_by}: "{m.content}"' for m in results]))
+            content_stream_generator = generate_chat_response(user_query, vid_chat.title, vid_chat.summary, history)
+        # Learning Tools
+        elif intent in ["flashcards_full", "quiz_full"]:
+            response_content = f"{intent.split('_')[0].title()} generation for full video is not implemented yet."
             content_stream_generator = _string_to_async_generator(response_content, intent)
-        elif intent == "flashcard-gen":
-            # response_content = generate_flashcards(vid_chat.transcript)
-            response_content = "Flashcard generation is not implemented yet." # Placeholder
+        elif intent in ["flashcards_topic", "quiz_topic"]:
+            response_content = f"{intent.split('_')[0].title()} generation for specific topics is not implemented yet."
             content_stream_generator = _string_to_async_generator(response_content, intent)
+        # Utility
         elif intent == "irrelevant":
             response_content = "This seems unrelated to the video content. How can I help you with the video?"
             content_stream_generator = _string_to_async_generator(response_content, intent)
-        # Add handling for 'general' intent if you implement it
-            # response_content = generate_general_response(user_query, conversation_history) # Needs history
-            # response_content = "Okay." # Simple placeholder
-        # elif intent == "general":
         else:
-            # Handle unknown or unhandled intents
             print(f"Warning: Unhandled intent '{intent}' received.")
             response_content = "Sorry, I'm not sure how to handle that request regarding the video."
             content_stream_generator = _string_to_async_generator(response_content, intent)
@@ -216,3 +278,5 @@ async def query_chatroom(vid_id: str, payload: ChatroomQueryPayload, session: Se
          print(f"Error processing intent '{intent}' for vid_id '{vid_id}': {e}")
          # Return a generic error to the user, log the details
          raise HTTPException(status_code=500, detail=f"An error occurred while processing your request.")
+
+        

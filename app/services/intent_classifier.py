@@ -7,11 +7,24 @@ load_dotenv()
 
 # --- Intent Definitions ---
 INTENT_DEFINITIONS = {
-    "summarization": "User wants a summary, overview, TL;DR, gist, or key points of the video content.",
-    "question-answering": "User is asking a specific question about the video content that requires finding an answer within the text (using RAG).",
-    "flashcard-gen": "User wants to generate flashcards based on the video content.",
-    "quiz-gen": "User wants to generate a quiz or test questions based on the video content.",
-    "irrelevant": "User's query is completely off-topic, nonsensical, inappropriate, or unrelated to the video content *and* the ongoing conversation flow." # Refined irrelevant
+    # Summarization
+    "summarize_full": "Generate summary of entire video (uses pre-processed content)",
+    "summarize_specific": "Summarize specific video section(s) (requires RAG)",
+    
+    # Q&A
+    "qa_specific": "Answer precise factual questions of the video (requires RAG)",
+    
+    # Learning Tools
+    "flashcards_full": "Generate flashcards covering whole video",
+    "flashcards_topic": "Create flashcards on specific topics (requires RAG)",
+    "quiz_full": "Generate quiz for entire video content", 
+    "quiz_topic": "Create quiz on specific sections (requires RAG)",
+    
+    # Conversational
+    "general_chat": "Casual conversation about video content",
+    
+    # Utility
+    "irrelevant": "Off-topic or inappropriate queries"
 }
 VALID_INTENTS = list(INTENT_DEFINITIONS.keys())
 
