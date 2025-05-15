@@ -22,9 +22,7 @@ INTENT_DEFINITIONS = {
     
     # Conversational
     "general_chat": "Casual conversation about video content",
-    
-    # Utility
-    "irrelevant": "Off-topic or inappropriate queries"
+
 }
 VALID_INTENTS = list(INTENT_DEFINITIONS.keys())
 

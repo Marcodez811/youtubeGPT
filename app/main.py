@@ -17,16 +17,16 @@ app = FastAPI(
 # --- CORS Middleware ---
 # Configure allowed origins based on your frontend deployment
 origins = [
-    "http://localhost:5173", # Vite default dev server
+    "http://localhost:5173",
     "http://localhost",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True, # Allow cookies if needed
-    allow_methods=["*"],    # Allows all standard methods
-    allow_headers=["*"],    # Allows all headers
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --- Include API Routers ---

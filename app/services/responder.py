@@ -2,27 +2,27 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from app.db.life_span import shared_resources
 from app.services.templates.qa import TEMPLATE_QA_SPECIFIC 
-from app.services.templates.summarization import TEMPLATE_FULL_SUMMARY, TEMPLATE_RAG_SUMMARY
+from app.services.templates.summarization import TEMPLATE_FULL_SUMMARY, TEMPLATE_RAG_SUMMARY, TEMPLATE_OVERVIEW_SUMMARY
 from app.services.templates.chat import CHAT_TEMPLATE
+from app.services.templates.learning_tools import TEMPLATE_FULL_QUIZ
 from typing import List
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-def generate_summary(query: str, transcript: str):
+def generate_summary(transcript: str):
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-pro-exp-03-25",
+        model="gemini-2.0-flash",
         temperature=0.5,
         max_tokens=None,
         timeout=None,
         max_retries=2,
         api_key=os.getenv('GOOGLE_API_KEY')
     )
-    prompt_template = ChatPromptTemplate.from_template(TEMPLATE_FULL_SUMMARY)
+    prompt_template = ChatPromptTemplate.from_template(TEMPLATE_OVERVIEW_SUMMARY)
     prompt = prompt_template.invoke({
             "transcript": transcript,
-            "user_query": query
         })
     try:
         response = llm.invoke(prompt)
@@ -159,9 +159,32 @@ async def generate_flashcards_topic(query: str, vid_id: str):
     """Handles both flashcards_full and flashcards_topic intents"""
     pass
 
-async def generate_quiz_full(transcript: str, scope: str, topic: str = None):
+async def generate_quiz_full(transcript: str):
     """Handles both quiz_full and quiz_topic intents"""
-    pass
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.0-flash",
+        temperature=0.5,
+        max_tokens=None,
+        timeout=None,
+        max_retries=2,
+        api_key=os.getenv('GOOGLE_API_KEY')
+    )
+    prompt_template = ChatPromptTemplate.from_template(TEMPLATE_FULL_QUIZ)
+    prompt = prompt_template.invoke({
+            "transcript": transcript,
+        })
+
+    try:
+        print("\n--- Invoking LLM Stream---")
+        async for chunk in llm.astream(prompt):
+            content = chunk.content
+            if content:
+                yield content
+        print("\n--- LLM Response Completed---")
+    except Exception as e:
+        print(f"\n--- Error during LLM Invocation ---")
+        print(f"An error occurred: {e}")
+        yield f"\nAn error occurred while generating the response: {e}"
 
 async def generate_quiz_topic(query: str, vid_id: str):
     """Handles both quiz_full and quiz_topic intents"""

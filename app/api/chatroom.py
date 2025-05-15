@@ -6,14 +6,15 @@ from typing import List, Dict, Any, AsyncGenerator
 from app.services.transcript import load_pipeline, get_video_content, Transcript
 from app.services.intent_classifier import classify_intent 
 from app.services.vector_store import VectorStore
-from app.services.responder import generate_qa_response, generate_summary, generate_chat_response, generate_summary_full, generate_summary_specific
+from app.services.responder import generate_qa_response, generate_quiz_full, generate_summary, generate_chat_response, generate_summary_full, generate_summary_specific
 from app.models.vid_chat import VidChat
 from app.models.message import Message, MessageSender
-from app.schemas.chatroom_schemas import ChatroomPayload, ChatroomQueryPayload
+from app.schemas.chatroom_schemas import ChatroomPayload, ChatroomQueryPayload, VidChatWithMessages
 from app.db.session import get_session
 from app.db.dependencies import get_vector_store
 from app.utils.yt_utils import get_description
 from fastapi.responses import StreamingResponse
+import logging
 
 # --- Router Definition ---
 router = APIRouter(
@@ -66,7 +67,7 @@ def create_chatroom(payload: ChatroomPayload, session: Session = Depends(get_ses
         title=title,
         url=url_str,
         description=description,
-        summary=generate_summary("Give a high level summarizaiton of what this video is all about.", transcript_obj.content),
+        summary=generate_summary(transcript_obj.content),
         transcript=transcript_obj.content,
         transcript_wts=transcript_wts_list
     )
@@ -83,11 +84,6 @@ def create_chatroom(payload: ChatroomPayload, session: Session = Depends(get_ses
         session.rollback()
         print(f"Database error creating chatroom for {vid_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to save chatroom data.")
-    
-class VidChatWithMessages(BaseModel):
-    vid_chat: VidChat
-    messages: List[Message]
-
 
 @router.get("/{vid_id}", response_model=VidChatWithMessages)
 def get_chatroom_by_id(vid_id: str, session: Session = Depends(get_session)):
@@ -183,6 +179,46 @@ def get_chatrooms(session: Session = Depends(get_session)):
     ).mappings().all()
     return [dict(row) for row in results]
 
+def get_content_stream_generator(intent: str, vid_chat, vid_id: str, user_query: str, session) -> AsyncGenerator:
+    match intent:
+        # Summarization
+        case "summarize_full":
+            return generate_summary_full(vid_chat.transcript, user_query)
+        
+        case "summarize_specific":
+            return generate_summary_specific(vid_id, user_query)
+        
+        # Q&A
+        case "qa_specific":
+            return generate_qa_response(user_query, vid_id)
+        
+        # Conversational
+        case "general_chat":
+            # current uses the vanilla sliding window method for allowing conversational flow.
+            stmt = select(Message.content, Message.sent_by).where(
+                Message.vid_id == vid_id
+            ).order_by(Message.created_at.desc()).limit(5)
+            results = session.exec(stmt).mappings().all()
+            history = list(reversed([f'{m.sent_by}: "{m.content}"' for m in results]))
+            return generate_chat_response(user_query, vid_chat.title, vid_chat.summary, history)
+        
+        # Learning Tools
+        case "quiz_full":
+            return generate_quiz_full(vid_chat.transcript)
+        case "flashcards_full":
+            response_content = f"{intent.split('_')[0].title()} generation for full video is not implemented yet."
+            return _string_to_async_generator(response_content, intent)
+        
+        case "flashcards_topic" | "quiz_topic":
+            response_content = f"{intent.split('_')[0].title()} generation for specific topics is not implemented yet."
+            return _string_to_async_generator(response_content, intent)
+        
+        # Default case
+        case _:
+            print(f"Warning: Unhandled intent '{intent}' received.")
+            response_content = "Sorry, I'm not sure how to handle that request regarding the video."
+            return _string_to_async_generator(response_content, intent)
+
 
 @router.post("/{vid_id}/query", response_model=Dict[str, Any])
 async def query_chatroom(vid_id: str, payload: ChatroomQueryPayload, session: Session = Depends(get_session)):
@@ -215,36 +251,7 @@ async def query_chatroom(vid_id: str, payload: ChatroomQueryPayload, session: Se
 
     try:
         # Summarization
-        if intent == "summarize_full":
-            content_stream_generator = generate_summary_full(vid_chat.transcript, user_query)
-        elif intent == "summarize_specific":
-            content_stream_generator = generate_summary_specific(vid_id, user_query)
-        # Q&A
-        elif intent == "qa_specific":
-            content_stream_generator = generate_qa_response(user_query, vid_id)
-        # Conversational
-        elif intent == "general_chat":
-            # current uses the vanilla sliding window method for allowing conversational flow.
-            stmt = select(Message.content, Message.sent_by).where(Message.vid_id == vid_id).order_by(Message.created_at.desc()).limit(5)
-            results = session.exec(stmt).mappings().all()
-            history = list(reversed([f'{m.sent_by}: "{m.content}"' for m in results]))
-            content_stream_generator = generate_chat_response(user_query, vid_chat.title, vid_chat.summary, history)
-        # Learning Tools
-        elif intent in ["flashcards_full", "quiz_full"]:
-            response_content = f"{intent.split('_')[0].title()} generation for full video is not implemented yet."
-            content_stream_generator = _string_to_async_generator(response_content, intent)
-        elif intent in ["flashcards_topic", "quiz_topic"]:
-            response_content = f"{intent.split('_')[0].title()} generation for specific topics is not implemented yet."
-            content_stream_generator = _string_to_async_generator(response_content, intent)
-        # Utility
-        elif intent == "irrelevant":
-            response_content = "This seems unrelated to the video content. How can I help you with the video?"
-            content_stream_generator = _string_to_async_generator(response_content, intent)
-        else:
-            print(f"Warning: Unhandled intent '{intent}' received.")
-            response_content = "Sorry, I'm not sure how to handle that request regarding the video."
-            content_stream_generator = _string_to_async_generator(response_content, intent)
-
+        content_stream_generator = get_content_stream_generator(intent, vid_chat, vid_id, user_query, session)
         # Create an async generator that preserves streaming and saves messages
         async def message_stream_generator():
             # Save user message
@@ -278,5 +285,3 @@ async def query_chatroom(vid_id: str, payload: ChatroomQueryPayload, session: Se
          print(f"Error processing intent '{intent}' for vid_id '{vid_id}': {e}")
          # Return a generic error to the user, log the details
          raise HTTPException(status_code=500, detail=f"An error occurred while processing your request.")
-
-        
